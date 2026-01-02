@@ -195,11 +195,22 @@ pub async fn bulk_insert_from_attached(
             continue;
          }
 
-         // Get available columns for this source table
-         let available_columns = table_columns
+         // Get available columns for this source table AND any joined tables
+         let mut available_columns = table_columns
             .get(&mapping.source_table)
             .cloned()
             .unwrap_or_default();
+
+         // Also include columns from joined tables
+         for join_clause in &mapping.source_joins {
+            // Extract table name from JOIN clause (e.g., "JOIN Document d ON ..." -> "Document")
+            let join_table = extract_table_from_join(join_clause);
+            if let Some(table_name) = join_table {
+               if let Some(join_columns) = table_columns.get(&table_name) {
+                  available_columns.extend(join_columns.iter().cloned());
+               }
+            }
+         }
 
          // Build and execute INSERT...SELECT SQL, filtering out missing columns
          let sql = match build_insert_select_sql(mapping, &available_columns) {
@@ -439,6 +450,25 @@ fn expression_uses_only_available_columns(sql: &str, available_columns: &HashSet
    potential_columns
       .iter()
       .all(|col| available_columns.contains(col))
+}
+
+/// Extract the table name from a JOIN clause.
+/// e.g., "JOIN Document d ON dp.DocumentId = d.DocumentId" -> Some("Document")
+/// e.g., "LEFT JOIN Document d ON ..." -> Some("Document")
+fn extract_table_from_join(join_clause: &str) -> Option<String> {
+   // Remove the JOIN prefix to get to the table name
+   let rest = if let Some(r) = join_clause.strip_prefix("JOIN ") {
+      r
+   } else if let Some(r) = join_clause.strip_prefix("LEFT JOIN ") {
+      r
+   } else if let Some(r) = join_clause.strip_prefix("INNER JOIN ") {
+      r
+   } else {
+      return None;
+   };
+
+   // The table name is the first word (before space or alias)
+   rest.split_whitespace().next().map(|s| s.to_string())
 }
 
 #[cfg(test)]
