@@ -188,6 +188,10 @@ export interface ColumnMapping {
 export interface TableMapping {
    /** Source table name in the attached database (e.g., "BibleCitation") */
    sourceTable: string
+   /** Optional alias for the source table (e.g., "dp" for DocumentParagraph) */
+   sourceAlias?: string
+   /** Optional JOIN clauses to add to the FROM clause (e.g., "JOIN Document d ON dp.DocumentId = d.DocumentId") */
+   sourceJoins?: string[]
    /** Target table name in the main database (e.g., "JwpubBibleCitation") */
    targetTable: string
    /** Column mappings defining how to transform data */

@@ -44,6 +44,18 @@ pub struct TableMapping {
    /// Source table name in the attached database (e.g., "BibleCitation")
    pub source_table: String,
 
+   /// Optional alias for the source table (e.g., "dp" for DocumentParagraph)
+   /// If not provided, no alias is used.
+   #[serde(default)]
+   pub source_alias: Option<String>,
+
+   /// Optional JOIN clauses to add to the FROM clause.
+   /// Each string should be a complete JOIN clause, e.g.:
+   /// "JOIN Document d ON dp.DocumentId = d.DocumentId"
+   /// The attached_db prefix will be added automatically.
+   #[serde(default)]
+   pub source_joins: Vec<String>,
+
    /// Target table name in the main database (e.g., "JwpubBibleCitation")
    pub target_table: String,
 
@@ -313,13 +325,46 @@ fn build_insert_select_sql(
       "INSERT"
    };
 
+   // Build FROM clause with optional alias and JOINs
+   let from_clause = if let Some(alias) = &mapping.source_alias {
+      format!("attached_db.{} {}", mapping.source_table, alias)
+   } else {
+      format!("attached_db.{}", mapping.source_table)
+   };
+
+   // Add JOIN clauses, prefixing table names with attached_db
+   let joins = if mapping.source_joins.is_empty() {
+      String::new()
+   } else {
+      let join_clauses: Vec<String> = mapping
+         .source_joins
+         .iter()
+         .map(|join| {
+            // Add attached_db prefix to JOIN table references
+            // e.g., "JOIN Document d ON ..." -> "JOIN attached_db.Document d ON ..."
+            if let Some(rest) = join.strip_prefix("JOIN ") {
+               format!("JOIN attached_db.{}", rest)
+            } else if let Some(rest) = join.strip_prefix("LEFT JOIN ") {
+               format!("LEFT JOIN attached_db.{}", rest)
+            } else if let Some(rest) = join.strip_prefix("INNER JOIN ") {
+               format!("INNER JOIN attached_db.{}", rest)
+            } else {
+               // Assume it's already properly formatted
+               join.clone()
+            }
+         })
+         .collect();
+      format!(" {}", join_clauses.join(" "))
+   };
+
    Some(format!(
-      "{} INTO {} ({}) SELECT {} FROM attached_db.{}",
+      "{} INTO {} ({}) SELECT {} FROM {}{}",
       insert_type,
       mapping.target_table,
       target_columns.join(", "),
       select_expressions.join(", "),
-      mapping.source_table
+      from_clause,
+      joins
    ))
 }
 
@@ -408,6 +453,8 @@ mod tests {
    fn test_build_insert_select_sql_with_constants() {
       let mapping = TableMapping {
          source_table: "BibleCitation".to_string(),
+         source_alias: None,
+         source_joins: vec![],
          target_table: "JwpubBibleCitation".to_string(),
          columns: vec![
             ColumnMapping {
@@ -442,6 +489,8 @@ mod tests {
    fn test_build_insert_select_sql_with_expression() {
       let mapping = TableMapping {
          source_table: "Document".to_string(),
+         source_alias: None,
+         source_joins: vec![],
          target_table: "JwpubDocument".to_string(),
          columns: vec![ColumnMapping {
             target_column: "documentLank".to_string(),
@@ -468,6 +517,8 @@ mod tests {
    fn test_build_insert_select_sql_escapes_quotes() {
       let mapping = TableMapping {
          source_table: "Test".to_string(),
+         source_alias: None,
+         source_joins: vec![],
          target_table: "TestTarget".to_string(),
          columns: vec![ColumnMapping {
             target_column: "value".to_string(),
@@ -488,6 +539,8 @@ mod tests {
    fn test_build_insert_select_sql_filters_missing_columns() {
       let mapping = TableMapping {
          source_table: "Test".to_string(),
+         source_alias: None,
+         source_joins: vec![],
          target_table: "TestTarget".to_string(),
          columns: vec![
             ColumnMapping {
@@ -518,6 +571,8 @@ mod tests {
    fn test_build_insert_select_sql_returns_none_when_all_columns_missing() {
       let mapping = TableMapping {
          source_table: "Test".to_string(),
+         source_alias: None,
+         source_joins: vec![],
          target_table: "TestTarget".to_string(),
          columns: vec![ColumnMapping {
             target_column: "col".to_string(),
@@ -531,6 +586,38 @@ mod tests {
       let available = make_columns(&["OtherColumn"]);
       let sql = build_insert_select_sql(&mapping, &available);
       assert!(sql.is_none());
+   }
+
+   #[test]
+   fn test_build_insert_select_sql_with_join() {
+      let mapping = TableMapping {
+         source_table: "DocumentParagraph".to_string(),
+         source_alias: Some("dp".to_string()),
+         source_joins: vec!["JOIN Document d ON dp.DocumentId = d.DocumentId".to_string()],
+         target_table: "JwpubDocumentParagraph".to_string(),
+         columns: vec![
+            ColumnMapping {
+               target_column: "documentLank".to_string(),
+               source: ColumnSource::Expression {
+                  sql: "'doc-' || d.MepsDocumentId".to_string(),
+               },
+            },
+            ColumnMapping {
+               target_column: "paragraphIndex".to_string(),
+               source: ColumnSource::Column {
+                  name: "ParagraphIndex".to_string(),
+               },
+            },
+         ],
+         replace_on_conflict: false,
+      };
+
+      let available = make_columns(&["ParagraphIndex", "MepsDocumentId"]);
+      let sql = build_insert_select_sql(&mapping, &available);
+      assert!(sql.is_some());
+      let sql_str = sql.unwrap();
+      assert!(sql_str.contains("FROM attached_db.DocumentParagraph dp"));
+      assert!(sql_str.contains("JOIN attached_db.Document d ON dp.DocumentId = d.DocumentId"));
    }
 
    #[test]
