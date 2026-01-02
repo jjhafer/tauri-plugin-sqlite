@@ -141,6 +141,22 @@ pub async fn bulk_insert_from_attached(
 
    let attached_tables: HashSet<String> = table_rows.into_iter().map(|(name,)| name).collect();
 
+   // Build a map of table -> columns for column existence checks
+   let mut table_columns: std::collections::HashMap<String, HashSet<String>> =
+      std::collections::HashMap::new();
+
+   for table_name in &attached_tables {
+      let pragma_sql = format!("PRAGMA attached_db.table_info('{}')", table_name);
+      let column_rows: Vec<(i32, String, String, i32, Option<String>, i32)> =
+         sqlx::query_as(&pragma_sql).fetch_all(&mut *writer).await?;
+
+      let columns: HashSet<String> = column_rows
+         .into_iter()
+         .map(|(_, name, _, _, _, _)| name)
+         .collect();
+      table_columns.insert(table_name.clone(), columns);
+   }
+
    // Begin transaction
    sqlx::query("BEGIN IMMEDIATE").execute(&mut *writer).await?;
 
@@ -167,8 +183,31 @@ pub async fn bulk_insert_from_attached(
             continue;
          }
 
-         // Build and execute INSERT...SELECT SQL
-         let sql = build_insert_select_sql(mapping);
+         // Get available columns for this source table
+         let available_columns = table_columns
+            .get(&mapping.source_table)
+            .cloned()
+            .unwrap_or_default();
+
+         // Build and execute INSERT...SELECT SQL, filtering out missing columns
+         let sql = match build_insert_select_sql(mapping, &available_columns) {
+            Some(sql) => sql,
+            None => {
+               // All columns were filtered out - skip this table
+               table_results.push(TableInsertResult {
+                  table_name: mapping.target_table.clone(),
+                  rows_inserted: 0,
+                  duration_ms: 0,
+                  skipped: true,
+                  skip_reason: Some(format!(
+                     "No valid columns found for table '{}'",
+                     mapping.source_table
+                  )),
+               });
+               continue;
+            }
+         };
+
          let result = sqlx::query(&sql).execute(&mut *writer).await?;
          let rows = result.rows_affected();
          total_rows += rows;
@@ -217,24 +256,55 @@ pub async fn bulk_insert_from_attached(
 }
 
 /// Build the INSERT...SELECT SQL statement from a table mapping.
-fn build_insert_select_sql(mapping: &TableMapping) -> String {
-   let target_columns: Vec<&str> = mapping
+/// Returns None if no valid columns remain after filtering.
+fn build_insert_select_sql(
+   mapping: &TableMapping,
+   available_columns: &HashSet<String>,
+) -> Option<String> {
+   // Filter columns to only include those that reference existing source columns
+   let valid_columns: Vec<(&ColumnMapping, String)> = mapping
       .columns
       .iter()
-      .map(|c| c.target_column.as_str())
+      .filter_map(|c| {
+         let expr = match &c.source {
+            ColumnSource::Constant { value } => {
+               // Constants are always valid
+               Some(format!("'{}'", value.replace('\'', "''")))
+            }
+            ColumnSource::Column { name } => {
+               // Only include if column exists in source table
+               if available_columns.contains(name) {
+                  Some(name.clone())
+               } else {
+                  None
+               }
+            }
+            ColumnSource::Expression { sql } => {
+               // For expressions, check if all referenced columns exist.
+               // We parse the SQL to extract potential column names and verify they exist.
+               if expression_uses_only_available_columns(sql, available_columns) {
+                  Some(sql.clone())
+               } else {
+                  None
+               }
+            }
+         };
+         expr.map(|e| (c, e))
+      })
       .collect();
 
-   let select_expressions: Vec<String> = mapping
-      .columns
+   if valid_columns.is_empty() {
+      return None;
+   }
+
+   let target_columns: Vec<&str> = valid_columns
       .iter()
-      .map(|c| match &c.source {
-         ColumnSource::Constant { value } => {
-            // Quote string constants and escape single quotes
-            format!("'{}'", value.replace('\'', "''"))
-         }
-         ColumnSource::Column { name } => name.clone(),
-         ColumnSource::Expression { sql } => sql.clone(),
-      })
+      .map(|(c, _)| c.target_column.as_str())
+      .collect();
+
+   let select_expressions: Vec<&str> = valid_columns
+      .iter()
+      .map(|(_, expr)| expr.as_str())
       .collect();
 
    let insert_type = if mapping.replace_on_conflict {
@@ -243,19 +313,96 @@ fn build_insert_select_sql(mapping: &TableMapping) -> String {
       "INSERT"
    };
 
-   format!(
+   Some(format!(
       "{} INTO {} ({}) SELECT {} FROM attached_db.{}",
       insert_type,
       mapping.target_table,
       target_columns.join(", "),
       select_expressions.join(", "),
       mapping.source_table
-   )
+   ))
+}
+
+/// Check if a SQL expression only uses columns that are available.
+/// This is a simple heuristic that checks for common column name patterns.
+fn expression_uses_only_available_columns(sql: &str, available_columns: &HashSet<String>) -> bool {
+   // Extract potential column references from the SQL
+   // This is a simplified check - it looks for identifiers that might be column names
+   let mut in_string = false;
+   let mut current_word = String::new();
+   let mut potential_columns: Vec<String> = Vec::new();
+
+   for c in sql.chars() {
+      if c == '\'' {
+         in_string = !in_string;
+         continue;
+      }
+
+      if in_string {
+         continue;
+      }
+
+      if c.is_alphanumeric() || c == '_' {
+         current_word.push(c);
+      } else if !current_word.is_empty() {
+         // Check if this looks like a column name (starts with letter, not a SQL keyword)
+         let word = current_word.clone();
+         let upper = word.to_uppercase();
+         let sql_keywords = [
+            "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "NULL", "AS", "CASE", "WHEN", "THEN",
+            "ELSE", "END", "COALESCE", "CAST", "TEXT", "INTEGER", "REAL", "BLOB", "TRUE", "FALSE",
+            "IS", "IN", "LIKE", "BETWEEN", "EXISTS", "DISTINCT",
+         ];
+
+         if !sql_keywords.contains(&upper.as_str())
+            && word
+               .chars()
+               .next()
+               .map(|c| c.is_alphabetic())
+               .unwrap_or(false)
+            && !word.chars().all(|c| c.is_numeric())
+         {
+            potential_columns.push(word);
+         }
+         current_word.clear();
+      }
+   }
+
+   // Check the last word
+   if !current_word.is_empty() {
+      let word = current_word;
+      let upper = word.to_uppercase();
+      let sql_keywords = [
+         "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "NULL", "AS", "CASE", "WHEN", "THEN",
+         "ELSE", "END", "COALESCE", "CAST", "TEXT", "INTEGER", "REAL", "BLOB", "TRUE", "FALSE",
+         "IS", "IN", "LIKE", "BETWEEN", "EXISTS", "DISTINCT",
+      ];
+
+      if !sql_keywords.contains(&upper.as_str())
+         && word
+            .chars()
+            .next()
+            .map(|c| c.is_alphabetic())
+            .unwrap_or(false)
+         && !word.chars().all(|c| c.is_numeric())
+      {
+         potential_columns.push(word);
+      }
+   }
+
+   // All potential column references must exist in available_columns
+   potential_columns
+      .iter()
+      .all(|col| available_columns.contains(col))
 }
 
 #[cfg(test)]
 mod tests {
    use super::*;
+
+   fn make_columns(names: &[&str]) -> HashSet<String> {
+      names.iter().map(|s| s.to_string()).collect()
+   }
 
    #[test]
    fn test_build_insert_select_sql_with_constants() {
@@ -279,11 +426,15 @@ mod tests {
          replace_on_conflict: true,
       };
 
-      let sql = build_insert_select_sql(&mapping);
+      let available = make_columns(&["BibleCitationId", "OtherColumn"]);
+      let sql = build_insert_select_sql(&mapping, &available);
       assert_eq!(
          sql,
-         "INSERT OR REPLACE INTO JwpubBibleCitation (lank, citationId) \
-          SELECT 'pub-it', BibleCitationId FROM attached_db.BibleCitation"
+         Some(
+            "INSERT OR REPLACE INTO JwpubBibleCitation (lank, citationId) \
+             SELECT 'pub-it', BibleCitationId FROM attached_db.BibleCitation"
+               .to_string()
+         )
       );
    }
 
@@ -301,11 +452,15 @@ mod tests {
          replace_on_conflict: false,
       };
 
-      let sql = build_insert_select_sql(&mapping);
+      let available = make_columns(&["MepsDocumentId"]);
+      let sql = build_insert_select_sql(&mapping, &available);
       assert_eq!(
          sql,
-         "INSERT INTO JwpubDocument (documentLank) \
-          SELECT 'doc-' || MepsDocumentId FROM attached_db.Document"
+         Some(
+            "INSERT INTO JwpubDocument (documentLank) \
+             SELECT 'doc-' || MepsDocumentId FROM attached_db.Document"
+               .to_string()
+         )
       );
    }
 
@@ -323,7 +478,87 @@ mod tests {
          replace_on_conflict: true,
       };
 
-      let sql = build_insert_select_sql(&mapping);
-      assert!(sql.contains("'it''s a test'"));
+      let available = make_columns(&[]);
+      let sql = build_insert_select_sql(&mapping, &available);
+      assert!(sql.is_some());
+      assert!(sql.unwrap().contains("'it''s a test'"));
+   }
+
+   #[test]
+   fn test_build_insert_select_sql_filters_missing_columns() {
+      let mapping = TableMapping {
+         source_table: "Test".to_string(),
+         target_table: "TestTarget".to_string(),
+         columns: vec![
+            ColumnMapping {
+               target_column: "existingCol".to_string(),
+               source: ColumnSource::Column {
+                  name: "ExistingColumn".to_string(),
+               },
+            },
+            ColumnMapping {
+               target_column: "missingCol".to_string(),
+               source: ColumnSource::Column {
+                  name: "MissingColumn".to_string(),
+               },
+            },
+         ],
+         replace_on_conflict: true,
+      };
+
+      let available = make_columns(&["ExistingColumn"]);
+      let sql = build_insert_select_sql(&mapping, &available);
+      assert!(sql.is_some());
+      let sql_str = sql.unwrap();
+      assert!(sql_str.contains("existingCol"));
+      assert!(!sql_str.contains("missingCol"));
+   }
+
+   #[test]
+   fn test_build_insert_select_sql_returns_none_when_all_columns_missing() {
+      let mapping = TableMapping {
+         source_table: "Test".to_string(),
+         target_table: "TestTarget".to_string(),
+         columns: vec![ColumnMapping {
+            target_column: "col".to_string(),
+            source: ColumnSource::Column {
+               name: "MissingColumn".to_string(),
+            },
+         }],
+         replace_on_conflict: true,
+      };
+
+      let available = make_columns(&["OtherColumn"]);
+      let sql = build_insert_select_sql(&mapping, &available);
+      assert!(sql.is_none());
+   }
+
+   #[test]
+   fn test_expression_uses_only_available_columns() {
+      let available = make_columns(&["DocumentId", "Title"]);
+
+      // Expression with available column
+      assert!(expression_uses_only_available_columns(
+         "'doc-' || DocumentId",
+         &available
+      ));
+
+      // Expression with missing column
+      assert!(!expression_uses_only_available_columns(
+         "'doc-' || MepsDocumentId",
+         &available
+      ));
+
+      // Expression with COALESCE using available columns
+      assert!(expression_uses_only_available_columns(
+         "COALESCE(DocumentId, 0)",
+         &available
+      ));
+
+      // Pure constant expression (no columns)
+      assert!(expression_uses_only_available_columns(
+         "'constant'",
+         &available
+      ));
    }
 }
