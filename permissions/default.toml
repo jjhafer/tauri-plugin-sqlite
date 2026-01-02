@@ -18,4 +18,5 @@ permissions = [
    "allow-close",
    "allow-close-all",
    "allow-remove",
+   "allow-bulk-insert-from-attached",
 ]

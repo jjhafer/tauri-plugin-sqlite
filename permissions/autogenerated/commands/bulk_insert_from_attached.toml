@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-bulk-insert-from-attached"
+description = "Enables the bulk_insert_from_attached command without any pre-configured scope."
+commands.allow = ["bulk_insert_from_attached"]
+
+[[permission]]
+identifier = "deny-bulk-insert-from-attached"
+description = "Denies the bulk_insert_from_attached command without any pre-configured scope."
+commands.deny = ["bulk_insert_from_attached"]

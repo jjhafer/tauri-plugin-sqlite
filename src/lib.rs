@@ -7,12 +7,16 @@ use tauri::{Emitter, Manager, RunEvent, Runtime, plugin::Builder as PluginBuilde
 use tokio::sync::{Notify, RwLock};
 use tracing::{debug, error, info, trace, warn};
 
+mod bulk_insert;
 mod commands;
 mod decode;
 mod error;
 mod transactions;
 mod wrapper;
 
+pub use bulk_insert::{
+   BulkInsertResult, ColumnMapping, ColumnSource, TableInsertResult, TableMapping,
+};
 pub use error::{Error, Result};
 pub use sqlx_sqlite_conn_mgr::Migrator as SqliteMigrator;
 pub use transactions::{ActiveInterruptibleTransactions, ActiveRegularTransactions};
@@ -170,6 +174,7 @@ impl Builder {
             commands::close_all,
             commands::remove,
             commands::get_migration_events,
+            bulk_insert::bulk_insert_from_attached,
          ])
          .setup(move |app, _api| {
             app.manage(DbInstances::default());

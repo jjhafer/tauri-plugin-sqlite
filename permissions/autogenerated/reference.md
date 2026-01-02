@@ -15,6 +15,7 @@ Default permissions for the sqlite plugin - allows all database operations
 - `allow-close`
 - `allow-close-all`
 - `allow-remove`
+- `allow-bulk-insert-from-attached`
 
 ## Permission Table
 
@@ -24,6 +25,32 @@ Default permissions for the sqlite plugin - allows all database operations
 <th>Description</th>
 </tr>
 
+
+<tr>
+<td>
+
+`sqlite:allow-bulk-insert-from-attached`
+
+</td>
+<td>
+
+Enables the bulk_insert_from_attached command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`sqlite:deny-bulk-insert-from-attached`
+
+</td>
+<td>
+
+Denies the bulk_insert_from_attached command without any pre-configured scope.
+
+</td>
+</tr>
 
 <tr>
 <td>

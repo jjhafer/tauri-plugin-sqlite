@@ -295,6 +295,18 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the bulk_insert_from_attached command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-bulk-insert-from-attached",
+          "markdownDescription": "Enables the bulk_insert_from_attached command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the bulk_insert_from_attached command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-bulk-insert-from-attached",
+          "markdownDescription": "Denies the bulk_insert_from_attached command without any pre-configured scope."
+        },
+        {
           "description": "Enables the close command without any pre-configured scope.",
           "type": "string",
           "const": "allow-close",
@@ -439,10 +451,10 @@
           "markdownDescription": "Denies the transaction_read command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the sqlite plugin - allows all database operations\n#### This default permission set includes:\n\n- `allow-load`\n- `allow-execute`\n- `allow-execute-transaction`\n- `allow-execute-interruptible-transaction`\n- `allow-transaction-continue`\n- `allow-transaction-read`\n- `allow-fetch-all`\n- `allow-fetch-one`\n- `allow-close`\n- `allow-close-all`\n- `allow-remove`",
+          "description": "Default permissions for the sqlite plugin - allows all database operations\n#### This default permission set includes:\n\n- `allow-load`\n- `allow-execute`\n- `allow-execute-transaction`\n- `allow-execute-interruptible-transaction`\n- `allow-transaction-continue`\n- `allow-transaction-read`\n- `allow-fetch-all`\n- `allow-fetch-one`\n- `allow-close`\n- `allow-close-all`\n- `allow-remove`\n- `allow-bulk-insert-from-attached`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the sqlite plugin - allows all database operations\n#### This default permission set includes:\n\n- `allow-load`\n- `allow-execute`\n- `allow-execute-transaction`\n- `allow-execute-interruptible-transaction`\n- `allow-transaction-continue`\n- `allow-transaction-read`\n- `allow-fetch-all`\n- `allow-fetch-one`\n- `allow-close`\n- `allow-close-all`\n- `allow-remove`"
+          "markdownDescription": "Default permissions for the sqlite plugin - allows all database operations\n#### This default permission set includes:\n\n- `allow-load`\n- `allow-execute`\n- `allow-execute-transaction`\n- `allow-execute-interruptible-transaction`\n- `allow-transaction-continue`\n- `allow-transaction-read`\n- `allow-fetch-all`\n- `allow-fetch-one`\n- `allow-close`\n- `allow-close-all`\n- `allow-remove`\n- `allow-bulk-insert-from-attached`"
         }
       ]
     }

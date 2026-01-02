@@ -11,6 +11,7 @@ fn main() {
       "close",
       "close_all",
       "remove",
+      "bulk_insert_from_attached",
    ])
    .build();
 }
