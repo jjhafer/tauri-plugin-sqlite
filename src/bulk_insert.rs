@@ -381,66 +381,73 @@ fn build_insert_select_sql(
 
 /// Check if a SQL expression only uses columns that are available.
 /// This is a simple heuristic that checks for common column name patterns.
+/// Handles alias.column patterns (e.g., "d.MepsDocumentId") by extracting just the column name.
 fn expression_uses_only_available_columns(sql: &str, available_columns: &HashSet<String>) -> bool {
    // Extract potential column references from the SQL
-   // This is a simplified check - it looks for identifiers that might be column names
+   // This handles both "ColumnName" and "alias.ColumnName" patterns
    let mut in_string = false;
    let mut current_word = String::new();
    let mut potential_columns: Vec<String> = Vec::new();
+   let mut prev_char: Option<char> = None;
+
+   let sql_keywords: HashSet<&str> = [
+      "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "NULL", "AS", "CASE", "WHEN", "THEN",
+      "ELSE", "END", "COALESCE", "CAST", "TEXT", "INTEGER", "REAL", "BLOB", "TRUE", "FALSE",
+      "IS", "IN", "LIKE", "BETWEEN", "EXISTS", "DISTINCT",
+   ]
+   .into_iter()
+   .collect();
 
    for c in sql.chars() {
       if c == '\'' {
          in_string = !in_string;
+         prev_char = Some(c);
          continue;
       }
 
       if in_string {
+         prev_char = Some(c);
          continue;
       }
 
       if c.is_alphanumeric() || c == '_' {
          current_word.push(c);
+      } else if c == '.' {
+         // This is likely a table alias prefix (e.g., "d." in "d.MepsDocumentId")
+         // Clear the current word (the alias) and continue to get the column name
+         current_word.clear();
       } else if !current_word.is_empty() {
          // Check if this looks like a column name (starts with letter, not a SQL keyword)
          let word = current_word.clone();
          let upper = word.to_uppercase();
-         let sql_keywords = [
-            "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "NULL", "AS", "CASE", "WHEN", "THEN",
-            "ELSE", "END", "COALESCE", "CAST", "TEXT", "INTEGER", "REAL", "BLOB", "TRUE", "FALSE",
-            "IS", "IN", "LIKE", "BETWEEN", "EXISTS", "DISTINCT",
-         ];
 
-         if !sql_keywords.contains(&upper.as_str())
+         if !sql_keywords.contains(upper.as_str())
             && word
                .chars()
                .next()
-               .map(|c| c.is_alphabetic())
+               .map(|ch| ch.is_alphabetic())
                .unwrap_or(false)
-            && !word.chars().all(|c| c.is_numeric())
+            && !word.chars().all(|ch| ch.is_numeric())
          {
             potential_columns.push(word);
          }
          current_word.clear();
       }
+      prev_char = Some(c);
    }
 
    // Check the last word
    if !current_word.is_empty() {
       let word = current_word;
       let upper = word.to_uppercase();
-      let sql_keywords = [
-         "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "NULL", "AS", "CASE", "WHEN", "THEN",
-         "ELSE", "END", "COALESCE", "CAST", "TEXT", "INTEGER", "REAL", "BLOB", "TRUE", "FALSE",
-         "IS", "IN", "LIKE", "BETWEEN", "EXISTS", "DISTINCT",
-      ];
 
-      if !sql_keywords.contains(&upper.as_str())
+      if !sql_keywords.contains(upper.as_str())
          && word
             .chars()
             .next()
-            .map(|c| c.is_alphabetic())
+            .map(|ch| ch.is_alphabetic())
             .unwrap_or(false)
-         && !word.chars().all(|c| c.is_numeric())
+         && !word.chars().all(|ch| ch.is_numeric())
       {
          potential_columns.push(word);
       }
